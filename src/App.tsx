@@ -1,42 +1,23 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { Mode } from "./types";
+import { ALL_MODES, MODE_LABELS, formatTime } from "./types";
+import { useSettings } from "./hooks/useSettings";
+import { useTimer } from "./hooks/useTimer";
+import { useStats } from "./hooks/useStats";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { StatsDisplay } from "./components/StatsDisplay";
+import { SettingsPanel } from "./components/SettingsPanel";
 import "./App.css";
 
-type Mode = "focus" | "shortBreak" | "longBreak";
-type TimerState = "idle" | "running" | "paused";
-
-const MODES: Record<Mode, { label: string; duration: number; color: string }> = {
-  focus: { label: "专注", duration: 25 * 60, color: "#ff6b6b" },
-  shortBreak: { label: "短休", duration: 5 * 60, color: "#4ecdc4" },
-  longBreak: { label: "长休", duration: 15 * 60, color: "#45b7d1" },
-};
-
-const FOCUS_SESSIONS_BEFORE_LONG_BREAK = 4;
-
-function formatTime(totalSeconds: number) {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
 function App() {
-  const [mode, setMode] = useState<Mode>("focus");
-  const [timerState, setTimerState] = useState<TimerState>("idle");
-  const [remaining, setRemaining] = useState(MODES.focus.duration);
-  const [focusCount, setFocusCount] = useState(0);
-  const [flash, setFlash] = useState(false);
-  const [isPinned, setIsPinned] = useState(true); // default alwaysOnTop: true
+  const [settings, updateSettings] = useSettings();
+  const { stats, recordSession } = useStats(settings);
+  const timer = useTimer(settings, recordSession);
+  const [isPinned, setIsPinned] = useState(true);
   const [hoveredDot, setHoveredDot] = useState<string | null>(null);
-
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const remainingRef = useRef(remaining);
-  const modeRef = useRef(mode);
-  const focusCountRef = useRef(focusCount);
-
-  useEffect(() => { remainingRef.current = remaining; }, [remaining]);
-  useEffect(() => { modeRef.current = mode; }, [mode]);
-  useEffect(() => { focusCountRef.current = focusCount; }, [focusCount]);
+  const [showSettings, setShowSettings] = useState(false);
 
   // Get initial pin state
   useEffect(() => {
@@ -53,88 +34,6 @@ function App() {
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
-  const current = MODES[mode];
-  const progress = 1 - remaining / current.duration;
-  const circumference = 2 * Math.PI * 140;
-
-  const clearTimer = useCallback(() => {
-    if (intervalRef.current !== null) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-  }, []);
-
-  const switchMode = useCallback(
-    (nextMode: Mode) => {
-      clearTimer();
-      setMode(nextMode);
-      setRemaining(MODES[nextMode].duration);
-      setTimerState("idle");
-    },
-    [clearTimer]
-  );
-
-  const handleTimerEnd = useCallback(() => {
-    clearTimer();
-    setTimerState("idle");
-    setFlash(true);
-    setTimeout(() => setFlash(false), 600);
-
-    if (modeRef.current === "focus") {
-      const newCount = focusCountRef.current + 1;
-      setFocusCount(newCount);
-      if (newCount % FOCUS_SESSIONS_BEFORE_LONG_BREAK === 0) {
-        switchMode("longBreak");
-      } else {
-        switchMode("shortBreak");
-      }
-    } else {
-      switchMode("focus");
-    }
-  }, [clearTimer, switchMode]);
-
-  const start = useCallback(() => {
-    setTimerState("running");
-    intervalRef.current = setInterval(() => {
-      setRemaining((prev) => {
-        if (prev <= 1) {
-          setTimeout(() => handleTimerEnd(), 0);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, [handleTimerEnd]);
-
-  const pause = useCallback(() => {
-    clearTimer();
-    setTimerState("paused");
-  }, [clearTimer]);
-
-  const reset = useCallback(() => {
-    clearTimer();
-    setRemaining(MODES[modeRef.current].duration);
-    setTimerState("idle");
-  }, [clearTimer]);
-
-  const skip = useCallback(() => {
-    handleTimerEnd();
-  }, [handleTimerEnd]);
-
-  const toggleStartPause = useCallback(() => {
-    if (timerState === "running") pause();
-    else start();
-  }, [timerState, start, pause]);
-
-  useEffect(() => () => clearTimer(), [clearTimer]);
-
-  const handleModeChange = useCallback(
-    (newMode: Mode) => {
-      if (newMode !== mode) switchMode(newMode);
-    },
-    [mode, switchMode]
-  );
-
   // Window controls
   const handlePin = useCallback(async () => {
     const result = await invoke<boolean>("toggle_always_on_top");
@@ -149,8 +48,29 @@ function App() {
     getCurrentWindow().hide();
   }, []);
 
+  const handleModeChange = useCallback(
+    (newMode: Mode) => {
+      if (newMode !== timer.mode) timer.switchMode(newMode);
+    },
+    [timer.mode, timer.switchMode]
+  );
+
+  // Keyboard shortcuts
+  useKeyboardShortcuts({
+    toggleStartPause: timer.toggleStartPause,
+    reset: timer.reset,
+    skip: timer.skip,
+    switchMode: handleModeChange,
+    onEscape: showSettings ? () => setShowSettings(false) : undefined,
+  });
+
+  const progress = timer.getProgress();
+  const circumference = timer.getCircumference();
+  const color = timer.getColor();
+  const label = timer.getLabel();
+
   return (
-    <div className={`app-container ${flash ? "flash" : ""}`} data-tauri-drag-region>
+    <div className={`app-container ${timer.flash ? "flash" : ""}`} data-tauri-drag-region>
       <div className="glass-card">
         {/* Title bar: dots + window controls */}
         <div className="title-bar" data-tauri-drag-region>
@@ -198,25 +118,36 @@ function App() {
             </span>
           </div>
 
-          {/* Pin indicator */}
-          {isPinned && (
-            <span className="pin-badge" title="窗口已置顶">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" opacity="0.4">
-                <path d="M12 17v5M9 3h6l-1 7h3l-7 8-1-5H7z" />
+          <div className="title-bar-right">
+            {isPinned && (
+              <span className="pin-badge" title="窗口已置顶">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" opacity="0.4">
+                  <path d="M12 17v5M9 3h6l-1 7h3l-7 8-1-5H7z" />
+                </svg>
+              </span>
+            )}
+            <button
+              className="settings-btn"
+              onClick={() => setShowSettings((v) => !v)}
+              title="设置"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
-            </span>
-          )}
+            </button>
+          </div>
         </div>
 
         {/* Mode tabs */}
         <div className="mode-tabs">
-          {(Object.keys(MODES) as Mode[]).map((key) => (
+          {ALL_MODES.map((key) => (
             <button
               key={key}
-              className={`mode-tab ${key === mode ? "active" : ""}`}
+              className={`mode-tab ${key === timer.mode ? "active" : ""}`}
               onClick={() => handleModeChange(key)}
             >
-              {MODES[key].label}
+              {MODE_LABELS[key]}
             </button>
           ))}
         </div>
@@ -234,26 +165,26 @@ function App() {
               strokeWidth="6"
               strokeDasharray={circumference}
               strokeDashoffset={circumference * (1 - progress)}
-              style={{ stroke: current.color }}
+              style={{ stroke: color }}
             />
           </svg>
           <div className="time-display">
-            <span className="time-text">{formatTime(remaining)}</span>
-            <span className="time-label">{current.label}</span>
+            <span className="time-text">{formatTime(timer.remaining)}</span>
+            <span className="time-label">{label}</span>
           </div>
         </div>
 
         {/* Session dots */}
-        {mode === "focus" && (
+        {timer.mode === "focus" && (
           <div className="session-dots">
-            {Array.from({ length: FOCUS_SESSIONS_BEFORE_LONG_BREAK }).map((_, i) => (
+            {Array.from({ length: settings.sessionsBeforeLongBreak }).map((_, i) => (
               <span
                 key={i}
-                className={`session-dot ${i < focusCount % FOCUS_SESSIONS_BEFORE_LONG_BREAK ? "filled" : ""}`}
+                className={`session-dot ${i < timer.focusCount % settings.sessionsBeforeLongBreak ? "filled" : ""}`}
                 style={{
                   background:
-                    i < focusCount % FOCUS_SESSIONS_BEFORE_LONG_BREAK
-                      ? current.color
+                    i < timer.focusCount % settings.sessionsBeforeLongBreak
+                      ? color
                       : undefined,
                 }}
               />
@@ -263,7 +194,7 @@ function App() {
 
         {/* Controls */}
         <div className="controls">
-          <button className="btn btn-secondary" onClick={reset} title="重置">
+          <button className="btn btn-secondary" onClick={timer.reset} title="重置 (R)">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M1 4v6h6M23 20v-6h-6" />
               <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
@@ -272,11 +203,11 @@ function App() {
 
           <button
             className="btn btn-primary"
-            onClick={toggleStartPause}
-            style={{ background: current.color, boxShadow: `0 4px 16px ${current.color}55` }}
-            title={timerState === "running" ? "暂停" : "开始"}
+            onClick={timer.toggleStartPause}
+            style={{ background: color, boxShadow: `0 4px 16px ${color}55` }}
+            title={timer.timerState === "running" ? "暂停 (Space)" : "开始 (Space)"}
           >
-            {timerState === "running" ? (
+            {timer.timerState === "running" ? (
               <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="6" y="4" width="4" height="16" rx="1" />
                 <rect x="14" y="4" width="4" height="16" rx="1" />
@@ -288,13 +219,25 @@ function App() {
             )}
           </button>
 
-          <button className="btn btn-secondary" onClick={skip} title="跳过">
+          <button className="btn btn-secondary" onClick={timer.skip} title="跳过 (S)">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polygon points="5,4 15,12 5,20" />
               <line x1="19" y1="5" x2="19" y2="19" />
             </svg>
           </button>
         </div>
+
+        {/* Stats */}
+        <StatsDisplay stats={stats} dailyGoal={settings.dailyGoal} />
+
+        {/* Settings overlay */}
+        {showSettings && (
+          <SettingsPanel
+            settings={settings}
+            onUpdate={updateSettings}
+            onClose={() => setShowSettings(false)}
+          />
+        )}
       </div>
     </div>
   );
