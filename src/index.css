@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "SF Pro Display", "Inter", system-ui, -apple-system, sans-serif;
+  --color-glass-light: rgba(255, 255, 255, 0.72);
+  --color-glass-dark: rgba(30, 30, 30, 0.72);
+  --color-accent: #ff6b6b;
+  --color-accent-green: #4ecdc4;
+  --color-accent-blue: #45b7d1;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Drag region for titlebar-less window */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
